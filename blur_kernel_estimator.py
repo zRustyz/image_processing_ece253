@@ -38,7 +38,7 @@ def estimate_blur_angle_directional(image, debug=False):
     # Rotate by 90° to convert frequency suppression axis to motion blur direction
     estimated_blur_angle = (dominant_gradient_direction + 90) % 360
     '''
-    estimated_blur_angle = dominant_gradient_direction
+    estimated_blur_angle = dominant_gradient_direction % 180
 
     if debug:
         # print(f"Dominant gradient direction: {dominant_gradient_direction:.2f}°")
@@ -183,15 +183,145 @@ def estimate_blur_length_spatial(gray_image, angle_deg, max_length=100, visualiz
 
     return est_length
 
+def estimate_blur_length_fourier(image, blur_angle_deg, debug=False):
+    """
+    Estimate the length (in pixels) of a linear motion blur,
+    given its direction in the spatial domain.
+
+    Parameters
+    ----------
+    image : np.ndarray
+        Input image. Can be RGB or grayscale, float in [0,1] or uint8.
+    blur_angle_deg : float
+        Blur direction in the spatial domain, in degrees (0° = +x axis, CCW).
+    debug : bool
+        If True, plots the 1D Fourier profile and prints intermediate info.
+
+    Returns
+    -------
+    length_est : float
+        Estimated blur length in pixels.
+    """
+
+    # 1. Convert to grayscale and apply Hanning window
+    if image.ndim == 3:
+        # assume RGB
+        if image.dtype != np.uint8:
+            gray = cv2.cvtColor((image * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
+        else:
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    else:
+        if image.dtype != np.uint8:
+            gray = (image * 255).astype(np.uint8)
+        else:
+            gray = image
+
+    gray = gray.astype(np.float32)
+    h, w = gray.shape
+
+    # 2D Hanning window to reduce edge artifacts in FFT
+    win_y = np.hanning(h)
+    win_x = np.hanning(w)
+    window = np.outer(win_y, win_x)
+    windowed = gray * window
+
+    # 2. Fourier transform and log-magnitude spectrum
+    F = np.fft.fft2(windowed)
+    Fshift = np.fft.fftshift(F)
+    mag = np.log1p(np.abs(Fshift))  # log(1 + |F|)
+
+    # Smooth spectrum to make oscillations cleaner
+    mag_smooth = gaussian_filter(mag, sigma=3)
+
+    # 3. Sample 1D profile along the blur direction in the frequency domain
+    # DC is at the center after fftshift
+    cy, cx = h // 2, w // 2
+
+    # blur_angle_deg is the spatial blur direction; its frequency-domain
+    # oscillations occur along the same axis.
+    theta = np.deg2rad(blur_angle_deg)
+    dir_vec = np.array([np.sin(theta), np.cos(theta)])  # (dy, dx)
+
+    # max radius: half-diagonal of the image
+    max_radius = int(0.5 * np.hypot(h, w))
+    profile = []
+
+    for r in range(1, max_radius):
+        y = int(round(cy + r * dir_vec[0]))
+        x = int(round(cx + r * dir_vec[1]))
+        if y < 0 or y >= h or x < 0 or x >= w:
+            break
+        profile.append(mag_smooth[y, x])
+
+    profile = np.array(profile, dtype=np.float32)
+    if profile.size < 10:
+        # Not enough samples to say anything meaningful
+        if debug:
+            print("Profile too short, returning length 1.")
+        return 1.0
+
+    # 4. Normalize and lightly smooth the 1D profile
+    profile -= profile.min()
+    denom = profile.max() + 1e-8
+    profile /= denom
+
+    # Simple 1D smoothing kernel
+    kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+    kernel /= kernel.sum()
+    profile_smooth = np.convolve(profile, kernel, mode="same")
+
+    # 5. Find the first significant local minimum (first "zero" of sinc-like pattern)
+    # Skip a few samples near the center (DC region)
+    start_idx = 3
+    center_val = profile_smooth[start_idx]
+    first_min_idx = None
+
+    for i in range(start_idx + 1, len(profile_smooth) - 1):
+        if profile_smooth[i] < profile_smooth[i - 1] and profile_smooth[i] < profile_smooth[i + 1]:
+            # Require the valley to be noticeably below the DC region
+            if profile_smooth[i] < 0.9 * center_val:
+                first_min_idx = i
+                break
+
+    if first_min_idx is None or first_min_idx <= 0:
+        # Fallback if no clear minimum found
+        length_est = 1.0
+    else:
+        # 6. Convert frequency-zero spacing → blur length
+        # For a rect blur of length L, zeros appear at f ≈ n / L.
+        # With DFT sampling step Δf ≈ 1 / N_eff, first zero at bin k1 gives:
+        #   f1 ≈ k1 / N_eff  ≈ 1 / L  →  L ≈ N_eff / k1
+        N_eff = min(h, w)
+        length_est = float(N_eff) / float(first_min_idx)
+
+    if debug:
+        print(f"First minimum index: {first_min_idx}")
+        print(f"Estimated blur length: {length_est:.2f} pixels")
+
+        x_axis = np.arange(len(profile_smooth))
+        plt.figure(figsize=(8, 4))
+        plt.plot(x_axis, profile_smooth, label="1D Fourier profile")
+        if first_min_idx is not None:
+            plt.axvline(first_min_idx, linestyle="--", label="First significant minimum")
+        plt.xlabel("Radius in frequency bins")
+        plt.ylabel("Normalized magnitude")
+        plt.title(f"Profile along blur direction (angle = {blur_angle_deg:.1f}°)")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig("debug_blur_length_profile.png", dpi=300, bbox_inches="tight")
+
+    return int(length_est)
+
 def main():
     # Load your blurred image (as color or grayscale)
-    image_path = 'outputs/5_blurred.png'
+    image_path = 'outputs/5/blurry.png'
     # image_path = 'outputs/5_noisy.png'
     image = cv2.imread(image_path)
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) / 255.0  # Normalize to [0, 1]
     angle = estimate_blur_angle_directional(image, debug=True)
     # length = estimate_blur_length_fft_peaks(image, 180, debug=True)
-    length = estimate_blur_length_spatial(image, 180)
+    # length = estimate_blur_length_spatial(image, 180)
+    length = estimate_blur_length_fourier(image, angle)
     print(angle)
     print(length)
 

@@ -1,6 +1,7 @@
 import numpy as np
 import cv2
 from blur_kernel_estimator import estimate_blur_angle_directional
+from blur_kernel_estimator import estimate_blur_length_fourier
 from noise_to_signal_estimator import nsr_blind_estimator
 from degrader import motion_blur_kernel
 
@@ -77,14 +78,15 @@ def inverse_deblur_color(image, kernel, epsilon=1e-3, output_path="outputs/inver
 def main():
     
     for i in range(1, 8):
-        image_path = f"outputs/{i}/blurred.png"
+        image_path = f"outputs/{i}/noisy.png"
         image = cv2.imread(image_path)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) / 255.0  # Normalize to [0, 1]
-        angle = estimate_blur_angle_directional(image, debug=True)
+        angle = estimate_blur_angle_directional(image)
+        len = estimate_blur_length_fourier(image, angle)
         nsr_estimate = nsr_blind_estimator(image, patch_size=8, top_k_percent=10, gradient_threshold=5.0)
-        kernel = motion_blur_kernel(length=27, angle=angle)
-        wiener_deblur_color(image, kernel, nsr_estimate, output_path=f"outputs/{i}/wiener_result_no_noise.png")
-        inverse_deblur_color(image, kernel, output_path=f"outputs/{i}/inverse_result_no_noise.png")
+        kernel = motion_blur_kernel(length=15, angle=0)
+        wiener_deblur_color(image, kernel, nsr_estimate, output_path=f"outputs/{i}/wiener_result_blur_noise.png")
+        inverse_deblur_color(image, kernel, output_path=f"outputs/{i}/inverse_result_blur_noise.png")
     print("saved image to outputs/")
 
 if __name__ == "__main__":

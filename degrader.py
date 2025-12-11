@@ -90,18 +90,31 @@ def save_images(original, blurred, noisy, output):
         return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
     cv2.imwrite(f"outputs/{output}/original.png", (original * 255).astype(np.uint8)[..., ::-1])
-    cv2.imwrite(f"outputs/{output}/blurred.png", (blurred * 255).astype(np.uint8)[..., ::-1])
+    cv2.imwrite(f"outputs/{output}/blurry.png", (blurred * 255).astype(np.uint8)[..., ::-1])
     cv2.imwrite(f"outputs/{output}/noisy.png", (noisy * 255).astype(np.uint8)[..., ::-1])
 
 
 # Main execution
 if __name__ == "__main__":
+    '''
     for i in range(1, 8):
         image_path = f"images/{i}.jpg"
         original = load_color_image(image_path)
-        ang = random.randrange(360)
+        ang = random.randrange(180)
         print(ang)
         kernel = motion_blur_kernel(length=27, angle=ang)
+        blurred = apply_motion_blur_color(original, kernel)
+        noisy = add_gaussian_noise_color(blurred, std_dev=0.02)
+        save_images(original, blurred, noisy, i)
+    '''
+    for i in range(1, 8):
+        image_path = f"images/{i}.jpg"
+        original = load_color_image(image_path)
+        ang = random.randrange(180)
+        print(ang)
+        len = random.randrange(15)
+        print(len)
+        kernel = motion_blur_kernel(length=15, angle=0)
         blurred = apply_motion_blur_color(original, kernel)
         noisy = add_gaussian_noise_color(blurred, std_dev=0.02)
         save_images(original, blurred, noisy, i)
